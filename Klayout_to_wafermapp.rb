@@ -49,60 +49,36 @@ def extract_die_positions(ep_layer, ep_datatype)
   return positions
 end
 
-def median(array)
-  return 0 if array.empty?
-  sorted = array.sort
-  len = sorted.length
-  (sorted[(len - 1) / 2] + sorted[len / 2]) / 2.0
-end
-
-# Calculate die pitch by finding nearest neighbor distances
-def calculate_pitch(positions)
-  return [1.8, 1.8] if positions.length < 10
+# Smart pitch calculation using sorted unique coordinates
+def calculate_pitch_smart(positions)
+  return [1.5, 1.5] if positions.length < 10
   
-  # Sample first 100 dies to find nearest neighbor distances
-  sample_size = [100, positions.length].min
-  nearest_distances_x = []
-  nearest_distances_y = []
+  # Get all unique X and Y coordinates (rounded to avoid floating point issues)
+  x_coords = positions.map { |p| (p[0] * 100).round / 100.0 }.uniq.sort
+  y_coords = positions.map { |p| (p[1] * 100).round / 100.0 }.uniq.sort
   
-  (0...sample_size).each do |i|
-    pos = positions[i]
-    
-    # Find nearest neighbor in X direction (same Y approximately)
-    nearest_x = nil
-    positions.each do |other|
-      next if pos == other
-      dy = (other[1] - pos[1]).abs
-      next if dy > 0.5  # Must be in same row
-      
-      dx = (other[0] - pos[0]).abs
-      if dx > 0.5 && (nearest_x.nil? || dx < nearest_x)
-        nearest_x = dx
-      end
-    end
-    nearest_distances_x << nearest_x if nearest_x
-    
-    # Find nearest neighbor in Y direction (same X approximately)
-    nearest_y = nil
-    positions.each do |other|
-      next if pos == other
-      dx = (other[0] - pos[0]).abs
-      next if dx > 0.5  # Must be in same column
-      
-      dy = (other[1] - pos[1]).abs
-      if dy > 0.5 && (nearest_y.nil? || dy < nearest_y)
-        nearest_y = dy
-      end
-    end
-    nearest_distances_y << nearest_y if nearest_y
+  puts "Unique X coordinates: #{x_coords.length}"
+  puts "Unique Y coordinates: #{y_coords.length}"
+  
+  # Calculate differences between consecutive coordinates
+  x_diffs = []
+  (0...x_coords.length-1).each do |i|
+    diff = x_coords[i+1] - x_coords[i]
+    x_diffs << diff if diff > 0.1  # Ignore tiny differences
   end
   
-  # Use median of nearest distances as pitch
-  pitch_x = nearest_distances_x.empty? ? 1.8 : median(nearest_distances_x)
-  pitch_y = nearest_distances_y.empty? ? 1.8 : median(nearest_distances_y)
+  y_diffs = []
+  (0...y_coords.length-1).each do |i|
+    diff = y_coords[i+1] - y_coords[i]
+    y_diffs << diff if diff > 0.1
+  end
   
-  puts "Calculated pitch - X: #{pitch_x.round(4)} mm, Y: #{pitch_y.round(4)} mm"
-  puts "Sample sizes - X: #{nearest_distances_x.length}, Y: #{nearest_distances_y.length}"
+  # The pitch is the smallest common difference
+  pitch_x = x_diffs.empty? ? 1.5 : x_diffs.min
+  pitch_y = y_diffs.empty? ? 1.5 : y_diffs.min
+  
+  puts "Calculated pitch - X: #{pitch_x.round(4)} mm (from #{x_diffs.length} differences)"
+  puts "Calculated pitch - Y: #{pitch_y.round(4)} mm (from #{y_diffs.length} differences)"
   
   return [pitch_x, pitch_y]
 end
@@ -112,7 +88,7 @@ def create_grid(positions, wafer_diameter_mm)
   return [], 0, 0 if positions.empty?
   
   # Calculate pitch from positions
-  pitch_x, pitch_y = calculate_pitch(positions)
+  pitch_x, pitch_y = calculate_pitch_smart(positions)
   
   x_list = positions.map { |p| p[0] }
   y_list = positions.map { |p| p[1] }
@@ -132,7 +108,8 @@ def create_grid(positions, wafer_diameter_mm)
   
   # Safety check
   if cols > 200 || rows > 200
-    puts "WARNING: Grid is large (#{cols}x#{rows}). This might take a while..."
+    puts "WARNING: Grid is very large (#{cols}x#{rows})!"
+    puts "This might indicate incorrect pitch calculation."
   end
   
   # Initialize grid with '.'
@@ -145,6 +122,7 @@ def create_grid(positions, wafer_diameter_mm)
   puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)})"
   puts "Mapping #{positions.length} dies to grid..."
   
+  mapped_count = 0
   positions.each do |pos|
     x = pos[0]
     y = pos[1]
@@ -162,8 +140,11 @@ def create_grid(positions, wafer_diameter_mm)
       else
         grid[row][col] = '?'
       end
+      mapped_count += 1
     end
   end
+  
+  puts "Successfully mapped #{mapped_count} / #{positions.length} dies"
   
   return grid, pitch_x, pitch_y
 end
