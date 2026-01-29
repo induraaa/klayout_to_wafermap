@@ -53,27 +53,27 @@ end
 def calculate_pitch(positions)
   return [0, 0] if positions.length < 2
   
-  # Sort positions by x and y
+  # Sort positions
   sorted_x = positions.sort_by { |p| p[0] }
   sorted_y = positions.sort_by { |p| p[1] }
   
-  # Find minimum spacing in X direction
+  # Find minimum spacing in X direction (must be > 0.5mm to avoid errors)
   x_spacings = []
   (0...sorted_x.length-1).each do |i|
     spacing = (sorted_x[i+1][0] - sorted_x[i][0]).abs
-    x_spacings << spacing if spacing > 0.01  # Ignore very small differences
+    x_spacings << spacing if spacing > 0.5  # Minimum 0.5mm spacing
   end
   
   # Find minimum spacing in Y direction
   y_spacings = []
   (0...sorted_y.length-1).each do |i|
     spacing = (sorted_y[i+1][1] - sorted_y[i][1]).abs
-    y_spacings << spacing if spacing > 0.01
+    y_spacings << spacing if spacing > 0.5  # Minimum 0.5mm spacing
   end
   
   # Use the most common small spacing as pitch
-  pitch_x = x_spacings.empty? ? 1.0 : x_spacings.min
-  pitch_y = y_spacings.empty? ? 1.0 : y_spacings.min
+  pitch_x = x_spacings.empty? ? 1.1632 : x_spacings.min
+  pitch_y = y_spacings.empty? ? 1.1632 : y_spacings.min
   
   puts "Calculated pitch - X: #{pitch_x.round(4)} mm, Y: #{pitch_y.round(4)} mm"
   
@@ -100,6 +100,13 @@ def create_grid(positions, wafer_diameter_mm)
   
   cols = ((max_x - min_x) / pitch_x).round + 1
   rows = ((max_y - min_y) / pitch_y).round + 1
+  
+  # Safety check: prevent huge grids
+  if cols > 500 || rows > 500
+    puts "ERROR: Grid too large! Cols: #{cols}, Rows: #{rows}"
+    puts "Pitch might be too small. Check your die spacing."
+    return [], pitch_x, pitch_y
+  end
   
   puts "Grid: #{cols} cols x #{rows} rows"
   
@@ -189,6 +196,7 @@ else
   
   if grid.empty?
     puts "ERROR: Could not create grid"
+    RBA::MessageBox.warning("Error", "Grid too large! Check the console for pitch values.", RBA::MessageBox::Ok)
   else
     write_file(grid, pitch_x, pitch_y, output_path)
   end
