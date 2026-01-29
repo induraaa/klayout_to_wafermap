@@ -49,6 +49,13 @@ def extract_die_positions(ep_layer, ep_datatype)
   return positions
 end
 
+def median(array)
+  return 0 if array.empty?
+  sorted = array.sort
+  len = sorted.length
+  (sorted[(len - 1) / 2] + sorted[len / 2]) / 2.0
+end
+
 # Calculate die pitch by finding nearest neighbor distances
 def calculate_pitch(positions)
   return [1.8, 1.8] if positions.length < 10
@@ -100,16 +107,9 @@ def calculate_pitch(positions)
   return [pitch_x, pitch_y]
 end
 
-def median(array)
-  return 0 if array.empty?
-  sorted = array.sort
-  len = sorted.length
-  (sorted[(len - 1) / 2] + sorted[len / 2]) / 2.0
-end
-
 # Create grid
 def create_grid(positions, wafer_diameter_mm)
-  return [] if positions.empty?
+  return [], 0, 0 if positions.empty?
   
   # Calculate pitch from positions
   pitch_x, pitch_y = calculate_pitch(positions)
@@ -210,22 +210,17 @@ puts "=" * 60
 puts "GDS to Wafer Map Converter (Ruby)"
 puts "=" * 60
 
-output_path = "C:/temp/wafer_map.txt"
-wafer_diameter_mm = 150.0
-ep_layer = 18
-ep_datatype = 0
+die_positions = extract_die_positions(ep_layer, ep_datatype)
 
-positions = extract_die_positions(ep_layer, ep_datatype)
-
-if positions.empty?
+if die_positions.empty?
   RBA::MessageBox.warning("Error", "No die found! Check layer 18/0", RBA::MessageBox::Ok)
 else
-  grid, pitch_x, pitch_y = create_grid(positions, wafer_diameter_mm)
+  result_grid, result_pitch_x, result_pitch_y = create_grid(die_positions, wafer_diameter_mm)
   
-  if grid.empty?
+  if result_grid.empty?
     puts "ERROR: Could not create grid"
   else
-    write_file(grid, pitch_x, pitch_y, output_path, positions.length)
+    write_file(result_grid, result_pitch_x, result_pitch_y, output_path, die_positions.length)
   end
 end
 
