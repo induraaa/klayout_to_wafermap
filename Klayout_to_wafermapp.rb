@@ -1,5 +1,7 @@
 # CONFIGURATION - CHANGE THESE!
 output_path = "C:/temp/wafer_map.txt"
+die_size_x_mm = 1.8  # CHANGED: Increased from 1.1632 to account for spacing
+die_size_y_mm = 1.8  # CHANGED: Increased from 1.1632 to account for spacing
 wafer_diameter_mm = 150.0
 ep_layer = 18
 ep_datatype = 0
@@ -49,46 +51,9 @@ def extract_die_positions(ep_layer, ep_datatype)
   return positions
 end
 
-# Smart pitch calculation using sorted unique coordinates
-def calculate_pitch_smart(positions)
-  return [1.5, 1.5] if positions.length < 10
-  
-  # Get all unique X and Y coordinates (rounded to avoid floating point issues)
-  x_coords = positions.map { |p| (p[0] * 100).round / 100.0 }.uniq.sort
-  y_coords = positions.map { |p| (p[1] * 100).round / 100.0 }.uniq.sort
-  
-  puts "Unique X coordinates: #{x_coords.length}"
-  puts "Unique Y coordinates: #{y_coords.length}"
-  
-  # Calculate differences between consecutive coordinates
-  x_diffs = []
-  (0...x_coords.length-1).each do |i|
-    diff = x_coords[i+1] - x_coords[i]
-    x_diffs << diff if diff > 0.1  # Ignore tiny differences
-  end
-  
-  y_diffs = []
-  (0...y_coords.length-1).each do |i|
-    diff = y_coords[i+1] - y_coords[i]
-    y_diffs << diff if diff > 0.1
-  end
-  
-  # The pitch is the smallest common difference
-  pitch_x = x_diffs.empty? ? 1.5 : x_diffs.min
-  pitch_y = y_diffs.empty? ? 1.5 : y_diffs.min
-  
-  puts "Calculated pitch - X: #{pitch_x.round(4)} mm (from #{x_diffs.length} differences)"
-  puts "Calculated pitch - Y: #{pitch_y.round(4)} mm (from #{y_diffs.length} differences)"
-  
-  return [pitch_x, pitch_y]
-end
-
 # Create grid
-def create_grid(positions, wafer_diameter_mm)
-  return [], 0, 0 if positions.empty?
-  
-  # Calculate pitch from positions
-  pitch_x, pitch_y = calculate_pitch_smart(positions)
+def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
+  return [] if positions.empty?
   
   x_list = positions.map { |p| p[0] }
   y_list = positions.map { |p| p[1] }
@@ -98,19 +63,13 @@ def create_grid(positions, wafer_diameter_mm)
   min_y = y_list.min
   max_y = y_list.max
   
-  puts "X range: #{min_x.round(3)} to #{max_x.round(3)}"
-  puts "Y range: #{min_y.round(3)} to #{max_y.round(3)}"
+  puts "X range: #{min_x} to #{max_x}"
+  puts "Y range: #{min_y} to #{max_y}"
   
-  cols = ((max_x - min_x) / pitch_x).round + 1
-  rows = ((max_y - min_y) / pitch_y).round + 1
+  cols = ((max_x - min_x) / die_size_x_mm).round + 1
+  rows = ((max_y - min_y) / die_size_y_mm).round + 1
   
   puts "Grid: #{cols} cols x #{rows} rows"
-  
-  # Safety check
-  if cols > 200 || rows > 200
-    puts "WARNING: Grid is very large (#{cols}x#{rows})!"
-    puts "This might indicate incorrect pitch calculation."
-  end
   
   # Initialize grid with '.'
   grid = Array.new(rows) { Array.new(cols, '.') }
@@ -119,16 +78,12 @@ def create_grid(positions, wafer_diameter_mm)
   cy = (min_y + max_y) / 2.0
   radius = wafer_diameter_mm / 2.0
   
-  puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)})"
-  puts "Mapping #{positions.length} dies to grid..."
-  
-  mapped_count = 0
   positions.each do |pos|
     x = pos[0]
     y = pos[1]
     
-    col = ((x - min_x) / pitch_x).round
-    row = ((y - min_y) / pitch_y).round
+    col = ((x - min_x) / die_size_x_mm).round
+    row = ((y - min_y) / die_size_y_mm).round
     
     if row >= 0 && row < rows && col >= 0 && col < cols
       dx = x - cx
@@ -140,17 +95,14 @@ def create_grid(positions, wafer_diameter_mm)
       else
         grid[row][col] = '?'
       end
-      mapped_count += 1
     end
   end
   
-  puts "Successfully mapped #{mapped_count} / #{positions.length} dies"
-  
-  return grid, pitch_x, pitch_y
+  return grid
 end
 
 # Write to file
-def write_file(grid, pitch_x, pitch_y, output_path, num_dies)
+def write_file(grid, output_path, die_size_x_mm, die_size_y_mm)
   return if grid.empty?
   
   puts "Writing to: #{output_path}"
@@ -160,7 +112,7 @@ def write_file(grid, pitch_x, pitch_y, output_path, num_dies)
     rows = grid.length
     
     # Write header
-    f.puts "\"PTVS\",#{cols},\"METRIC\",\"BOTTOM\",\"#{pitch_x.round(4)}\",\"#{pitch_y.round(4)}\",#{rows},#{cols},\"0\",\"0\""
+    f.puts "\"PTVS\",#{cols},\"METRIC\",\"BOTTOM\",\"#{die_size_x_mm}\",\"#{die_size_y_mm}\",#{rows},#{cols},\"0\",\"0\""
     f.puts "\"44\",\"4\""
     f.puts "\"0\""
     f.puts "\"1\",\"4\""
@@ -181,7 +133,7 @@ def write_file(grid, pitch_x, pitch_y, output_path, num_dies)
     end
   end
   
-  msg = "Success!\n\nFile: #{output_path}\nRows: #{grid.length}\nCols: #{grid[0].length}\nPitch: #{pitch_x.round(4)} x #{pitch_y.round(4)} mm\nDies mapped: #{num_dies}"
+  msg = "Success!\n\nFile: #{output_path}\nRows: #{grid.length}\nCols: #{grid[0].length}"
   RBA::MessageBox.info("Done", msg, RBA::MessageBox::Ok)
   puts "DONE!"
 end
@@ -191,17 +143,24 @@ puts "=" * 60
 puts "GDS to Wafer Map Converter (Ruby)"
 puts "=" * 60
 
-die_positions = extract_die_positions(ep_layer, ep_datatype)
+output_path = "C:/temp/wafer_map.txt"
+die_size_x_mm = 1.8  # ADJUST THIS if grid is still wrong
+die_size_y_mm = 1.8  # ADJUST THIS if grid is still wrong
+wafer_diameter_mm = 150.0
+ep_layer = 18
+ep_datatype = 0
 
-if die_positions.empty?
+positions = extract_die_positions(ep_layer, ep_datatype)
+
+if positions.empty?
   RBA::MessageBox.warning("Error", "No die found! Check layer 18/0", RBA::MessageBox::Ok)
 else
-  result_grid, result_pitch_x, result_pitch_y = create_grid(die_positions, wafer_diameter_mm)
+  grid = create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   
-  if result_grid.empty?
+  if grid.empty?
     puts "ERROR: Could not create grid"
   else
-    write_file(result_grid, result_pitch_x, result_pitch_y, output_path, die_positions.length)
+    write_file(grid, output_path, die_size_x_mm, die_size_y_mm)
   end
 end
 
