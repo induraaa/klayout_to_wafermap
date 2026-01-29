@@ -26,8 +26,8 @@ def extract_die_positions(ep_layer, ep_datatype)
   layout, cell = get_current_layout
   return [] if layout.nil?
   
-  #puts "Layout: #{layout.name}"
-  #puts "Cell: #{cell.name}"
+  puts "Processing layout..."
+  puts "Cell: #{cell.basic_name}"
   
   layer_idx = layout.layer(ep_layer, ep_datatype)
   shapes = cell.shapes(layer_idx)
