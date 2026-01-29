@@ -58,8 +58,9 @@ end
 def calculate_die_pitch(positions)
   return nil, nil if positions.length < 2
   
-  x_list = positions.map { |p| p[0] }.sort
-  y_list = positions.map { |p| p[1] }.sort
+  # Extract and deduplicate coordinates
+  x_list = positions.map { |p| p[0] }.uniq.sort
+  y_list = positions.map { |p| p[1] }.uniq.sort
   
   # Calculate minimum spacing in X direction
   x_spacings = []
@@ -99,13 +100,20 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   # Auto-calculate die pitch from actual positions
   pitch_x, pitch_y = calculate_die_pitch(positions)
   
-  if pitch_x.nil? || pitch_y.nil?
-    puts "WARNING: Could not calculate pitch, using manual die size"
+  # Validate and fallback to manual die size if needed
+  if pitch_x.nil? || pitch_y.nil? || pitch_x <= 0.0 || pitch_y <= 0.0
+    puts "WARNING: Could not calculate valid pitch, using manual die size"
     pitch_x = die_size_x_mm
     pitch_y = die_size_y_mm
   else
     puts "Calculated pitch: X=#{pitch_x.round(4)} mm, Y=#{pitch_y.round(4)} mm"
     puts "Manual die size: X=#{die_size_x_mm} mm, Y=#{die_size_y_mm} mm"
+  end
+  
+  # Validate manual die size as well
+  if pitch_x <= 0.0 || pitch_y <= 0.0
+    puts "ERROR: Invalid die size/pitch values"
+    return [], nil, nil
   end
   
   cols = ((max_x - min_x) / pitch_x).round + 1

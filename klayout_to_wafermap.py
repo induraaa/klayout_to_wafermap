@@ -73,8 +73,9 @@ def calculate_die_pitch(die_positions):
     if len(die_positions) < 2:
         return None, None
     
-    x_coords = sorted([pos[0] for pos in die_positions])
-    y_coords = sorted([pos[1] for pos in die_positions])
+    # Extract and deduplicate coordinates
+    x_coords = sorted(list(set([pos[0] for pos in die_positions])))
+    y_coords = sorted(list(set([pos[1] for pos in die_positions])))
     
     # Calculate minimum spacing in X direction
     x_spacings = []
@@ -121,13 +122,19 @@ def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter)
     # Auto-calculate die pitch from actual positions
     pitch_x, pitch_y = calculate_die_pitch(die_positions)
     
-    if pitch_x is None or pitch_y is None:
-        print("WARNING: Could not calculate pitch, using manual die size")
+    # Validate and fallback to manual die size if needed
+    if pitch_x is None or pitch_y is None or pitch_x <= 0.0 or pitch_y <= 0.0:
+        print("WARNING: Could not calculate valid pitch, using manual die size")
         pitch_x = die_size_x
         pitch_y = die_size_y
     else:
         print(f"Calculated pitch: X={pitch_x:.4f} mm, Y={pitch_y:.4f} mm")
         print(f"Manual die size: X={die_size_x} mm, Y={die_size_y} mm")
+    
+    # Validate manual die size as well
+    if pitch_x <= 0.0 or pitch_y <= 0.0:
+        print("ERROR: Invalid die size/pitch values")
+        return [], None, None
     
     # Calculate grid dimensions using calculated pitch
     grid_cols = int(round((max_x - min_x) / pitch_x)) + 1
