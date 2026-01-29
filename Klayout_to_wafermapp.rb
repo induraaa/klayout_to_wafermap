@@ -169,7 +169,7 @@ def create_grid(positions, wafer_diameter_mm)
 end
 
 # Write to file
-def write_file(grid, pitch_x, pitch_y, output_path)
+def write_file(grid, pitch_x, pitch_y, output_path, num_dies)
   return if grid.empty?
   
   puts "Writing to: #{output_path}"
@@ -200,7 +200,7 @@ def write_file(grid, pitch_x, pitch_y, output_path)
     end
   end
   
-  msg = "Success!\n\nFile: #{output_path}\nRows: #{grid.length}\nCols: #{grid[0].length}\nPitch: #{pitch_x.round(4)} x #{pitch_y.round(4)} mm\nDies mapped: #{positions.length}"
+  msg = "Success!\n\nFile: #{output_path}\nRows: #{grid.length}\nCols: #{grid[0].length}\nPitch: #{pitch_x.round(4)} x #{pitch_y.round(4)} mm\nDies mapped: #{num_dies}"
   RBA::MessageBox.info("Done", msg, RBA::MessageBox::Ok)
   puts "DONE!"
 end
@@ -225,7 +225,7 @@ else
   if grid.empty?
     puts "ERROR: Could not create grid"
   else
-    write_file(grid, pitch_x, pitch_y, output_path)
+    write_file(grid, pitch_x, pitch_y, output_path, positions.length)
   end
 end
 
