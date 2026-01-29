@@ -1,7 +1,7 @@
 # CONFIGURATION - CHANGE THESE!
 output_path = "C:/temp/wafer_map.txt"
-die_size_x_mm = 1.78  # Adjusted for rotated dies
-die_size_y_mm = 1.81  # Adjusted for rotated dies
+die_size_x_mm = 1.785  # Fine-tuned
+die_size_y_mm = 1.815  # Fine-tuned
 wafer_diameter_mm = 150.0
 ep_layer = 18
 ep_datatype = 0
@@ -63,8 +63,8 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   min_y = y_list.min
   max_y = y_list.max
   
-  puts "X range: #{min_x.round(2)} to #{max_x.round(2)}"
-  puts "Y range: #{min_y.round(2)} to #{max_y.round(2)}"
+  puts "X range: #{min_x.round(3)} to #{max_x.round(3)}"
+  puts "Y range: #{min_y.round(3)} to #{max_y.round(3)}"
   
   cols = ((max_x - min_x) / die_size_x_mm).round + 1
   rows = ((max_y - min_y) / die_size_y_mm).round + 1
@@ -78,21 +78,31 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   cy = (min_y + max_y) / 2.0
   radius = wafer_diameter_mm / 2.0
   
-  puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)}), radius: #{radius}mm"
+  # Map dies to grid with tolerance
+  tolerance = die_size_x_mm * 0.35  # 35% tolerance for snapping
   
   positions.each do |pos|
     x = pos[0]
     y = pos[1]
     
-    col = ((x - min_x) / die_size_x_mm).round
-    row = ((y - min_y) / die_size_y_mm).round
+    # Calculate grid position with better rounding
+    col_float = (x - min_x) / die_size_x_mm
+    row_float = (y - min_y) / die_size_y_mm
+    
+    col = col_float.round
+    row = row_float.round
+    
+    # Check if it's close enough to grid position
+    col_diff = (col_float - col).abs
+    row_diff = (row_float - row).abs
     
     if row >= 0 && row < rows && col >= 0 && col < cols
       dx = x - cx
       dy = y - cy
       dist = Math.sqrt(dx * dx + dy * dy)
       
-      if dist > radius * 0.95
+      # Better edge detection
+      if dist > radius * 0.97
         grid[row][col] = '*'
       else
         grid[row][col] = '?'
