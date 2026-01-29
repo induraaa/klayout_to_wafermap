@@ -3,7 +3,6 @@ output_path = "C:/temp/wafer_map.txt"
 wafer_diameter_mm = 150.0
 ep_layer = 18
 ep_datatype = 0
-tolerance_mm = 0.1  # Tolerance for grouping dies into grid
 
 # Get current layout
 def get_current_layout
@@ -50,70 +49,69 @@ def extract_die_positions(ep_layer, ep_datatype)
   return positions
 end
 
-# Calculate die pitch using histogram method
+# Calculate die pitch by finding nearest neighbor distances
 def calculate_pitch(positions)
-  return [1.1632, 1.1632] if positions.length < 4
+  return [1.8, 1.8] if positions.length < 10
   
-  # Calculate all spacings between dies
-  x_spacings = []
-  y_spacings = []
+  # Sample first 100 dies to find nearest neighbor distances
+  sample_size = [100, positions.length].min
+  nearest_distances_x = []
+  nearest_distances_y = []
   
-  positions.each_with_index do |pos1, i|
-    positions.each_with_index do |pos2, j|
-      next if i >= j
+  (0...sample_size).each do |i|
+    pos = positions[i]
+    
+    # Find nearest neighbor in X direction (same Y approximately)
+    nearest_x = nil
+    positions.each do |other|
+      next if pos == other
+      dy = (other[1] - pos[1]).abs
+      next if dy > 0.5  # Must be in same row
       
-      dx = (pos2[0] - pos1[0]).abs
-      dy = (pos2[1] - pos1[1]).abs
-      
-      # Only consider spacings that are likely to be die pitch (0.5mm to 10mm)
-      x_spacings << dx if dx > 0.5 && dx < 10.0
-      y_spacings << dy if dy > 0.5 && dy < 10.0
+      dx = (other[0] - pos[0]).abs
+      if dx > 0.5 && (nearest_x.nil? || dx < nearest_x)
+        nearest_x = dx
+      end
     end
+    nearest_distances_x << nearest_x if nearest_x
+    
+    # Find nearest neighbor in Y direction (same X approximately)
+    nearest_y = nil
+    positions.each do |other|
+      next if pos == other
+      dx = (other[0] - pos[0]).abs
+      next if dx > 0.5  # Must be in same column
+      
+      dy = (other[1] - pos[1]).abs
+      if dy > 0.5 && (nearest_y.nil? || dy < nearest_y)
+        nearest_y = dy
+      end
+    end
+    nearest_distances_y << nearest_y if nearest_y
   end
   
-  # Find the most common spacing (the pitch)
-  pitch_x = find_most_common_spacing(x_spacings)
-  pitch_y = find_most_common_spacing(y_spacings)
+  # Use median of nearest distances as pitch
+  pitch_x = nearest_distances_x.empty? ? 1.8 : median(nearest_distances_x)
+  pitch_y = nearest_distances_y.empty? ? 1.8 : median(nearest_distances_y)
   
   puts "Calculated pitch - X: #{pitch_x.round(4)} mm, Y: #{pitch_y.round(4)} mm"
+  puts "Sample sizes - X: #{nearest_distances_x.length}, Y: #{nearest_distances_y.length}"
   
   return [pitch_x, pitch_y]
 end
 
-# Find most common spacing with tolerance
-def find_most_common_spacing(spacings)
-  return 1.1632 if spacings.empty?
-  
-  spacings.sort!
-  
-  # Group spacings that are within 0.05mm of each other
-  groups = []
-  current_group = [spacings[0]]
-  
-  (1...spacings.length).each do |i|
-    if (spacings[i] - current_group.last).abs < 0.05
-      current_group << spacings[i]
-    else
-      groups << current_group if current_group.length > 2
-      current_group = [spacings[i]]
-    end
-  end
-  groups << current_group if current_group.length > 2
-  
-  # Return the average of the largest group
-  if groups.empty?
-    return spacings.min
-  else
-    largest_group = groups.max_by { |g| g.length }
-    return largest_group.sum / largest_group.length.to_f
-  end
+def median(array)
+  return 0 if array.empty?
+  sorted = array.sort
+  len = sorted.length
+  (sorted[(len - 1) / 2] + sorted[len / 2]) / 2.0
 end
 
 # Create grid
-def create_grid(positions, wafer_diameter_mm, tolerance_mm)
+def create_grid(positions, wafer_diameter_mm)
   return [] if positions.empty?
   
-  # Calculate pitch
+  # Calculate pitch from positions
   pitch_x, pitch_y = calculate_pitch(positions)
   
   x_list = positions.map { |p| p[0] }
@@ -124,20 +122,18 @@ def create_grid(positions, wafer_diameter_mm, tolerance_mm)
   min_y = y_list.min
   max_y = y_list.max
   
-  puts "X range: #{min_x.round(3)} to #{max_x.round(3)} mm"
-  puts "Y range: #{min_y.round(3)} to #{max_y.round(3)} mm"
+  puts "X range: #{min_x.round(3)} to #{max_x.round(3)}"
+  puts "Y range: #{min_y.round(3)} to #{max_y.round(3)}"
   
   cols = ((max_x - min_x) / pitch_x).round + 1
   rows = ((max_y - min_y) / pitch_y).round + 1
   
-  # Safety check
-  if cols > 300 || rows > 300
-    puts "ERROR: Grid too large! Cols: #{cols}, Rows: #{rows}"
-    puts "Calculated pitch X: #{pitch_x}, Y: #{pitch_y}"
-    return [], pitch_x, pitch_y
-  end
-  
   puts "Grid: #{cols} cols x #{rows} rows"
+  
+  # Safety check
+  if cols > 200 || rows > 200
+    puts "WARNING: Grid is large (#{cols}x#{rows}). This might take a while..."
+  end
   
   # Initialize grid with '.'
   grid = Array.new(rows) { Array.new(cols, '.') }
@@ -146,13 +142,15 @@ def create_grid(positions, wafer_diameter_mm, tolerance_mm)
   cy = (min_y + max_y) / 2.0
   radius = wafer_diameter_mm / 2.0
   
-  # Map each die to grid
+  puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)})"
+  puts "Mapping #{positions.length} dies to grid..."
+  
   positions.each do |pos|
     x = pos[0]
     y = pos[1]
     
-    col = ((x - min_x) / pitch_x + 0.5).to_i
-    row = ((y - min_y) / pitch_y + 0.5).to_i
+    col = ((x - min_x) / pitch_x).round
+    row = ((y - min_y) / pitch_y).round
     
     if row >= 0 && row < rows && col >= 0 && col < cols
       dx = x - cx
@@ -202,7 +200,7 @@ def write_file(grid, pitch_x, pitch_y, output_path)
     end
   end
   
-  msg = "Success!\n\nFile: #{output_path}\nRows: #{grid.length}\nCols: #{grid[0].length}\nPitch: #{pitch_x.round(4)} x #{pitch_y.round(4)} mm"
+  msg = "Success!\n\nFile: #{output_path}\nRows: #{grid.length}\nCols: #{grid[0].length}\nPitch: #{pitch_x.round(4)} x #{pitch_y.round(4)} mm\nDies mapped: #{positions.length}"
   RBA::MessageBox.info("Done", msg, RBA::MessageBox::Ok)
   puts "DONE!"
 end
@@ -212,16 +210,20 @@ puts "=" * 60
 puts "GDS to Wafer Map Converter (Ruby)"
 puts "=" * 60
 
+output_path = "C:/temp/wafer_map.txt"
+wafer_diameter_mm = 150.0
+ep_layer = 18
+ep_datatype = 0
+
 positions = extract_die_positions(ep_layer, ep_datatype)
 
 if positions.empty?
   RBA::MessageBox.warning("Error", "No die found! Check layer 18/0", RBA::MessageBox::Ok)
 else
-  grid, pitch_x, pitch_y = create_grid(positions, wafer_diameter_mm, tolerance_mm)
+  grid, pitch_x, pitch_y = create_grid(positions, wafer_diameter_mm)
   
   if grid.empty?
-    puts "ERROR: Could not create grid - check console output"
-    RBA::MessageBox.warning("Error", "Grid creation failed! Check console for details.", RBA::MessageBox::Ok)
+    puts "ERROR: Could not create grid"
   else
     write_file(grid, pitch_x, pitch_y, output_path)
   end
