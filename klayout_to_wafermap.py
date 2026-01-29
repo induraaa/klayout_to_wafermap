@@ -133,7 +133,8 @@ def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter)
     
     # Validate manual die size as well
     if pitch_x <= 0.0 or pitch_y <= 0.0:
-        print("ERROR: Invalid die size/pitch values")
+        print(f"ERROR: Invalid die size configuration (X={die_size_x}, Y={die_size_y})")
+        print("ERROR: Die size must be positive values")
         return [], None, None
     
     # Calculate grid dimensions using calculated pitch
@@ -154,6 +155,8 @@ def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter)
     placed_dies = 0
     edge_dies = 0
     good_dies = 0
+    collisions = 0
+    occupied_cells = set()
     
     # Place die on the grid
     for x, y in die_positions:
@@ -163,6 +166,13 @@ def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter)
         
         # Check if within grid bounds
         if 0 <= row < grid_rows and 0 <= col < grid_cols:
+            # Check for collision
+            cell_key = (row, col)
+            if cell_key in occupied_cells:
+                collisions += 1
+            else:
+                occupied_cells.add(cell_key)
+            
             # Calculate distance from wafer center
             dist_from_center = math.sqrt((x - center_x)**2 + (y - center_y)**2)
             
@@ -176,6 +186,8 @@ def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter)
             placed_dies += 1
     
     print(f"Placed dies: {placed_dies} ({good_dies} good, {edge_dies} edge)")
+    if collisions > 0:
+        print(f"WARNING: {collisions} die collision(s) detected (multiple dies in same cell)")
     
     return grid, pitch_x, pitch_y
 

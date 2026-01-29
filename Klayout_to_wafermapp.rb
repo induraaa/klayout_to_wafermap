@@ -112,7 +112,8 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   
   # Validate manual die size as well
   if pitch_x <= 0.0 || pitch_y <= 0.0
-    puts "ERROR: Invalid die size/pitch values"
+    puts "ERROR: Invalid die size configuration (X=#{die_size_x_mm}, Y=#{die_size_y_mm})"
+    puts "ERROR: Die size must be positive values"
     return [], nil, nil
   end
   
@@ -132,6 +133,8 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   placed_dies = 0
   edge_dies = 0
   good_dies = 0
+  collisions = 0
+  occupied_cells = {}
   
   positions.each do |pos|
     x = pos[0]
@@ -141,6 +144,14 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
     row = ((y - min_y) / pitch_y).round
     
     if row >= 0 && row < rows && col >= 0 && col < cols
+      # Check for collision
+      cell_key = "#{row},#{col}"
+      if occupied_cells.key?(cell_key)
+        collisions += 1
+      else
+        occupied_cells[cell_key] = true
+      end
+      
       dx = x - cx
       dy = y - cy
       dist = Math.sqrt(dx * dx + dy * dy)
@@ -157,6 +168,7 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   end
   
   puts "Placed dies: #{placed_dies} (#{good_dies} good, #{edge_dies} edge)"
+  puts "WARNING: #{collisions} die collision(s) detected (multiple dies in same cell)" if collisions > 0
   
   return grid, pitch_x, pitch_y
 end
