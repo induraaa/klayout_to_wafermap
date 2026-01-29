@@ -157,27 +157,18 @@ def create_grid(positions, wafer_diameter_mm)
     col = col_exact.round
     row = row_exact.round
     
-    # Check snapping quality (within 40% of cell)
-    col_error = (col_exact - col).abs
-    row_error = (row_exact - row).abs
-    
-    if col_error > 0.4 || row_error > 0.4
-      # Poor snap - might indicate pitch issue
-      # But still map it
-    end
-    
     if row >= 0 && row < rows && col >= 0 && col < cols
       # Calculate distance from wafer center
       dx = x - cx
       dy = y - cy
       dist = Math.sqrt(dx * dx + dy * dy)
       
-      # Edge detection: dies within 2-3mm of edge
+      # Edge detection: dies within 3mm of edge
       if dist > (radius - 3.0)
         grid[row][col] = '*'
         edge_count += 1
       else
-        grid[row][col] = '?'
+        grid[row][col] = '1'  # Changed from '?' to bin '1' for red color
       end
       
       mapped_count += 1
@@ -190,7 +181,7 @@ def create_grid(positions, wafer_diameter_mm)
   return grid, pitch_x, pitch_y
 end
 
-# Write to file
+# Write to file with red color for good dies
 def write_file(grid, pitch_x, pitch_y, output_path)
   return if grid.empty?
   
@@ -213,7 +204,8 @@ def write_file(grid, pitch_x, pitch_y, output_path)
     f.puts "\"\"\n\"\""
     f.puts "\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\",\"RVD\""
     f.puts "\"25\""
-    f.puts "\"1\",\"PASS\",\"\",\"0\",\"0\",\"PASS\",65280,\"0\",\"0\",\"False\""
+    # Bin 1 = RED (RGB: 255, 0, 0 = 16711680 in decimal)
+    f.puts "\"1\",\"GOOD\",\"\",\"0\",\"0\",\"PASS\",16711680,\"0\",\"0\",\"False\""
     
     # Write grid (reversed for correct orientation)
     grid.reverse.each do |row|
@@ -229,7 +221,7 @@ end
 
 # ===================== MAIN =====================
 puts "=" * 60
-puts "GDS to Wafer Map Converter (Ruby) - Production Version"
+puts "GDS to Wafer Map Converter (Ruby) - RED DIES VERSION"
 puts "=" * 60
 
 positions = extract_die_positions(ep_layer, ep_datatype)
