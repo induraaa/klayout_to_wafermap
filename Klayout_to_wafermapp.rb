@@ -1,7 +1,7 @@
 # CONFIGURATION - CHANGE THESE!
 output_path = "C:/temp/wafer_map.txt"
-die_size_x_mm = 1.1632
-die_size_y_mm = 1.1632
+die_size_x_mm = 1.5
+die_size_y_mm = 1.5
 wafer_diameter_mm = 150.0
 ep_layer = 18
 ep_datatype = 0
