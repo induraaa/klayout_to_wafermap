@@ -65,14 +65,48 @@ def extract_die_positions_from_gds(gds_file, layer_num, datatype):
     return die_positions
 
 
+def calculate_die_pitch(die_positions):
+    """
+    Calculate the die pitch (center-to-center spacing) from actual die positions.
+    Returns pitch_x, pitch_y in millimeters.
+    """
+    if len(die_positions) < 2:
+        return None, None
+    
+    # Extract and deduplicate coordinates
+    x_coords = sorted(list(set([pos[0] for pos in die_positions])))
+    y_coords = sorted(list(set([pos[1] for pos in die_positions])))
+    
+    # Calculate minimum spacing in X direction
+    x_spacings = []
+    for i in range(1, len(x_coords)):
+        spacing = x_coords[i] - x_coords[i-1]
+        if spacing > 0.01:  # Ignore very small differences (noise)
+            x_spacings.append(spacing)
+    
+    # Calculate minimum spacing in Y direction
+    y_spacings = []
+    for i in range(1, len(y_coords)):
+        spacing = y_coords[i] - y_coords[i-1]
+        if spacing > 0.01:  # Ignore very small differences (noise)
+            y_spacings.append(spacing)
+    
+    pitch_x = min(x_spacings) if x_spacings else None
+    pitch_y = min(y_spacings) if y_spacings else None
+    
+    return pitch_x, pitch_y
+
+
 def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter):
     """
     Convert die positions to a grid representing the wafer.
-    Returns a 2D list where each cell is a die status symbol.
+    Returns a tuple of (grid, pitch_x, pitch_y) where:
+    - grid is a 2D list where each cell is a die status symbol
+    - pitch_x, pitch_y are the calculated die pitches
     """
     if not die_positions:
         print("ERROR: No die positions found!")
-        return []
+        return [], None, None
     
     # Find the range of die positions
     x_coords = [pos[0] for pos in die_positions]
@@ -83,13 +117,32 @@ def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter)
     min_y = min(y_coords)
     max_y = max(y_coords)
     
-    print(f"Die position range: X=[{min_x:.2f}, {max_x:.2f}], Y=[{min_y:.2f}, {max_y:.2f}]")
+    print(f"Die position range: X=[{min_x:.3f}, {max_x:.3f}], Y=[{min_y:.3f}, {max_y:.3f}] mm")
     
-    # Calculate grid dimensions
-    grid_cols = int(round((max_x - min_x) / die_size_x)) + 1
-    grid_rows = int(round((max_y - min_y) / die_size_y)) + 1
+    # Auto-calculate die pitch from actual positions
+    pitch_x, pitch_y = calculate_die_pitch(die_positions)
+    
+    # Validate and fallback to manual die size if needed
+    if pitch_x is None or pitch_y is None or pitch_x <= 0.0 or pitch_y <= 0.0:
+        print("WARNING: Could not calculate valid pitch, using manual die size")
+        pitch_x = die_size_x
+        pitch_y = die_size_y
+    else:
+        print(f"Calculated pitch: X={pitch_x:.4f} mm, Y={pitch_y:.4f} mm")
+        print(f"Manual die size: X={die_size_x} mm, Y={die_size_y} mm")
+    
+    # Validate manual die size as well
+    if pitch_x <= 0.0 or pitch_y <= 0.0:
+        print(f"ERROR: Invalid die size configuration (X={die_size_x}, Y={die_size_y})")
+        print("ERROR: Die size must be positive values")
+        return [], None, None
+    
+    # Calculate grid dimensions using calculated pitch
+    grid_cols = int(round((max_x - min_x) / pitch_x)) + 1
+    grid_rows = int(round((max_y - min_y) / pitch_y)) + 1
     
     print(f"Grid size: {grid_cols} cols x {grid_rows} rows")
+    print(f"Expected dies: {len(die_positions)}")
     
     # Initialize grid with '.' (no die)
     grid = [['.' for _ in range(grid_cols)] for _ in range(grid_rows)]
@@ -99,24 +152,44 @@ def create_wafer_map_grid(die_positions, die_size_x, die_size_y, wafer_diameter)
     center_y = (min_y + max_y) / 2.0
     wafer_radius = wafer_diameter / 2.0
     
+    placed_dies = 0
+    edge_dies = 0
+    good_dies = 0
+    collisions = 0
+    occupied_cells = set()
+    
     # Place die on the grid
     for x, y in die_positions:
-        # Calculate grid indices
-        col = int(round((x - min_x) / die_size_x))
-        row = int(round((y - min_y) / die_size_y))
+        # Calculate grid indices using calculated pitch
+        col = int(round((x - min_x) / pitch_x))
+        row = int(round((y - min_y) / pitch_y))
         
         # Check if within grid bounds
         if 0 <= row < grid_rows and 0 <= col < grid_cols:
+            # Check for collision
+            cell_key = (row, col)
+            if cell_key in occupied_cells:
+                collisions += 1
+            else:
+                occupied_cells.add(cell_key)
+            
             # Calculate distance from wafer center
             dist_from_center = math.sqrt((x - center_x)**2 + (y - center_y)**2)
             
             # Determine die type based on distance from center
             if dist_from_center > wafer_radius * 0.95:
                 grid[row][col] = '*'  # Edge die
+                edge_dies += 1
             else:
                 grid[row][col] = '?'  # Good die
+                good_dies += 1
+            placed_dies += 1
     
-    return grid
+    print(f"Placed dies: {placed_dies} ({good_dies} good, {edge_dies} edge)")
+    if collisions > 0:
+        print(f"WARNING: {collisions} die collision(s) detected (multiple dies in same cell)")
+    
+    return grid, pitch_x, pitch_y
 
 
 def write_wafer_map_to_txt(grid, output_file, wafer_info):
@@ -175,7 +248,7 @@ def main():
         return
     
     # Step 2: Create wafer map grid
-    grid = create_wafer_map_grid(
+    grid, pitch_x, pitch_y = create_wafer_map_grid(
         die_positions, 
         DIE_SIZE_X_MM, 
         DIE_SIZE_Y_MM, 
@@ -193,8 +266,8 @@ def main():
         "rows": len(grid),
         "units": "METRIC",
         "orientation": "BOTTOM",
-        "die_width": f"{DIE_SIZE_X_MM}",
-        "die_height": f"{DIE_SIZE_Y_MM}"
+        "die_width": f"{pitch_x:.4f}",
+        "die_height": f"{pitch_y:.4f}"
     }
     
     # Step 4: Write to output file
