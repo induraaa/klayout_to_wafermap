@@ -1,7 +1,7 @@
 # CONFIGURATION - CHANGE THESE!
 output_path = "C:/temp/wafer_map.txt"
-die_size_x_mm = 1.8  # CHANGED: Increased from 1.1632 to account for spacing
-die_size_y_mm = 1.8  # CHANGED: Increased from 1.1632 to account for spacing
+die_size_x_mm = 1.78  # Adjusted for rotated dies
+die_size_y_mm = 1.81  # Adjusted for rotated dies
 wafer_diameter_mm = 150.0
 ep_layer = 18
 ep_datatype = 0
@@ -63,8 +63,8 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   min_y = y_list.min
   max_y = y_list.max
   
-  puts "X range: #{min_x} to #{max_x}"
-  puts "Y range: #{min_y} to #{max_y}"
+  puts "X range: #{min_x.round(2)} to #{max_x.round(2)}"
+  puts "Y range: #{min_y.round(2)} to #{max_y.round(2)}"
   
   cols = ((max_x - min_x) / die_size_x_mm).round + 1
   rows = ((max_y - min_y) / die_size_y_mm).round + 1
@@ -77,6 +77,8 @@ def create_grid(positions, die_size_x_mm, die_size_y_mm, wafer_diameter_mm)
   cx = (min_x + max_x) / 2.0
   cy = (min_y + max_y) / 2.0
   radius = wafer_diameter_mm / 2.0
+  
+  puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)}), radius: #{radius}mm"
   
   positions.each do |pos|
     x = pos[0]
@@ -142,13 +144,6 @@ end
 puts "=" * 60
 puts "GDS to Wafer Map Converter (Ruby)"
 puts "=" * 60
-
-output_path = "C:/temp/wafer_map.txt"
-die_size_x_mm = 1.8  # ADJUST THIS if grid is still wrong
-die_size_y_mm = 1.8  # ADJUST THIS if grid is still wrong
-wafer_diameter_mm = 150.0
-ep_layer = 18
-ep_datatype = 0
 
 positions = extract_die_positions(ep_layer, ep_datatype)
 
