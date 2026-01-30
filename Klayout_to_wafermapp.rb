@@ -49,51 +49,6 @@ def extract_die_positions(ep_layer, ep_datatype)
   return positions
 end
 
-# Auto-calculate die pitch using nearest neighbor with statistical filtering
-def calculate_pitch_robust(positions, sample_size = 300)
-  return [1.78, 1.81] if positions.length < 10
-  
-  sample = positions.take([sample_size, positions.length].min)
-  
-  x_distances = []
-  y_distances = []
-  
-  # For each sample die, find nearest neighbor in X and Y direction
-  sample.each_with_index do |pos, i|
-    nearest_x = nil
-    nearest_y = nil
-    
-    positions.each_with_index do |other, j|
-      next if i == j
-      
-      dx = (other[0] - pos[0]).abs
-      dy = (other[1] - pos[1]).abs
-      
-      # Nearest in X direction (must be in same row - Y within 0.4mm)
-      if dy < 0.4 && dx > 0.1
-        nearest_x = dx if nearest_x.nil? || dx < nearest_x
-      end
-      
-      # Nearest in Y direction (must be in same column - X within 0.4mm)
-      if dx < 0.4 && dy > 0.1
-        nearest_y = dy if nearest_y.nil? || dy < nearest_y
-      end
-    end
-    
-    x_distances << nearest_x if nearest_x && nearest_x < 5.0
-    y_distances << nearest_y if nearest_y && nearest_y < 5.0
-  end
-  
-  # Use median to avoid outliers
-  pitch_x = x_distances.empty? ? 1.78 : median(x_distances)
-  pitch_y = y_distances.empty? ? 1.81 : median(y_distances)
-  
-  puts "Auto-detected pitch - X: #{pitch_x.round(4)} mm (from #{x_distances.length} samples)"
-  puts "Auto-detected pitch - Y: #{pitch_y.round(4)} mm (from #{y_distances.length} samples)"
-  
-  return [pitch_x, pitch_y]
-end
-
 def median(array)
   return 0 if array.empty?
   sorted = array.sort
@@ -101,141 +56,133 @@ def median(array)
   (sorted[(len - 1) / 2] + sorted[len / 2]) / 2.0
 end
 
-# Create grid with improved mapping
-def create_grid(positions, wafer_diameter_mm)
+# Find unique row and column positions by clustering
+def find_grid_lines(positions)
+  x_coords = positions.map { |p| p[0] }.sort
+  y_coords = positions.map { |p| p[1] }.sort
+  
+  # Cluster X coordinates (find unique columns)
+  x_clusters = cluster_coordinates(x_coords, 0.5)  # 0.5mm tolerance
+  y_clusters = cluster_coordinates(y_coords, 0.5)
+  
+  puts "Found #{x_clusters.length} unique columns"
+  puts "Found #{y_clusters.length} unique rows"
+  
+  return x_clusters, y_clusters
+end
+
+# Cluster nearby coordinates together
+def cluster_coordinates(coords, tolerance)
+  return [] if coords.empty?
+  
+  clusters = []
+  current_cluster = [coords[0]]
+  
+  (1...coords.length).each do |i|
+    if (coords[i] - current_cluster.last).abs <= tolerance
+      current_cluster << coords[i]
+    else
+      # Finalize cluster (use median)
+      clusters << median(current_cluster)
+      current_cluster = [coords[i]]
+    end
+  end
+  
+  # Don't forget last cluster
+  clusters << median(current_cluster) if !current_cluster.empty?
+  
+  return clusters
+end
+
+# Create grid based on ACTUAL die positions
+def create_grid_from_actual_positions(positions, wafer_diameter_mm)
   return [] if positions.empty?
   
-  # Auto-calculate pitch
-  pitch_x, pitch_y = calculate_pitch_robust(positions)
+  # Find actual grid lines from die positions
+  x_grid, y_grid = find_grid_lines(positions)
   
-  x_list = positions.map { |p| p[0] }
-  y_list = positions.map { |p| p[1] }
+  cols = x_grid.length
+  rows = y_grid.length
   
-  min_x = x_list.min
-  max_x = x_list.max
-  min_y = y_list.min
-  max_y = y_list.max
-  
-  puts "X range: #{min_x.round(3)} to #{max_x.round(3)} mm"
-  puts "Y range: #{min_y.round(3)} to #{max_y.round(3)} mm"
-  
-  cols = ((max_x - min_x) / pitch_x).round + 1
-  rows = ((max_y - min_y) / pitch_y).round + 1
-  
-  puts "Grid: #{cols} cols x #{rows} rows"
+  puts "Grid: #{cols} cols x #{rows} rows (from actual positions)"
   
   # Safety check
   if cols > 300 || rows > 300
-    puts "ERROR: Grid too large! Check pitch calculation."
-    return [], pitch_x, pitch_y
+    puts "ERROR: Grid too large!"
+    return [], 0, 0
   end
   
-  # Initialize grid with '.'
+  # Initialize grid
   grid = Array.new(rows) { Array.new(cols, '.') }
   
-  # Wafer center calculation
+  # Calculate wafer center
+  min_x = x_grid.min
+  max_x = x_grid.max
+  min_y = y_grid.min
+  max_y = y_grid.max
+  
   cx = (min_x + max_x) / 2.0
   cy = (min_y + max_y) / 2.0
   radius = wafer_diameter_mm / 2.0
   
   puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)}) mm"
-  puts "Radius: #{radius} mm"
   
-  # Map each die with improved snapping - try multiple strategies
+  # Calculate average pitch for header
+  pitch_x = cols > 1 ? (max_x - min_x) / (cols - 1) : 1.78
+  pitch_y = rows > 1 ? (max_y - min_y) / (rows - 1) : 1.81
+  
+  puts "Average pitch - X: #{pitch_x.round(4)} mm, Y: #{pitch_y.round(4)} mm"
+  
+  # Map each die to nearest grid intersection
   mapped_count = 0
-  edge_count = 0
-  skipped = []
   
   positions.each do |pos|
     x = pos[0]
     y = pos[1]
     
-    # Calculate exact grid position
-    col_exact = (x - min_x) / pitch_x
-    row_exact = (y - min_y) / pitch_y
+    # Find nearest column
+    col = find_nearest_index(x, x_grid)
+    row = find_nearest_index(y, y_grid)
     
-    # Try rounding first
-    col = col_exact.round
-    row = row_exact.round
-    
-    # Check bounds
     if row >= 0 && row < rows && col >= 0 && col < cols
-      # Only map if cell is empty
+      # Calculate distance from wafer center
+      dx = x - cx
+      dy = y - cy
+      dist = Math.sqrt(dx * dx + dy * dy)
+      
+      # Only set if empty
       if grid[row][col] == '.'
-        # Calculate distance from wafer center
-        dx = x - cx
-        dy = y - cy
-        dist = Math.sqrt(dx * dx + dy * dy)
-        
-        # Edge detection: dies within 3mm of edge
         if dist > (radius - 3.0)
           grid[row][col] = '*'
-          edge_count += 1
         else
           grid[row][col] = '?'
         end
-        
         mapped_count += 1
-      else
-        # Cell already occupied - this die might be a duplicate or misaligned
-        skipped << [x, y]
       end
-    else
-      skipped << [x, y]
     end
   end
   
-  puts "Mapped #{mapped_count} dies (#{edge_count} edge dies)"
-  puts "Skipped: #{skipped.length} dies"
-  
-  # Second pass: try to map skipped dies to nearest empty cell
-  if skipped.length > 0
-    puts "Attempting to map #{skipped.length} skipped dies..."
-    recovery_count = 0
-    
-    skipped.each do |pos|
-      x = pos[0]
-      y = pos[1]
-      
-      col_exact = (x - min_x) / pitch_x
-      row_exact = (y - min_y) / pitch_y
-      
-      # Try neighboring cells
-      base_col = col_exact.round
-      base_row = row_exact.round
-      
-      found = false
-      [-1, 0, 1].each do |dr|
-        [-1, 0, 1].each do |dc|
-          next if dr == 0 && dc == 0  # Already tried this
-          
-          col = base_col + dc
-          row = base_row + dr
-          
-          if row >= 0 && row < rows && col >= 0 && col < cols && grid[row][col] == '.'
-            dx = x - cx
-            dy = y - cy
-            dist = Math.sqrt(dx * dx + dy * dy)
-            
-            if dist > (radius - 3.0)
-              grid[row][col] = '*'
-            else
-              grid[row][col] = '?'
-            end
-            
-            recovery_count += 1
-            found = true
-            break
-          end
-        end
-        break if found
-      end
-    end
-    
-    puts "Recovered #{recovery_count} additional dies"
-  end
+  puts "Mapped #{mapped_count} / #{positions.length} dies"
   
   return grid, pitch_x, pitch_y
+end
+
+# Find index of nearest value in sorted array
+def find_nearest_index(value, array)
+  return 0 if array.empty?
+  
+  min_diff = Float::INFINITY
+  best_idx = 0
+  
+  array.each_with_index do |grid_val, idx|
+    diff = (value - grid_val).abs
+    if diff < min_diff
+      min_diff = diff
+      best_idx = idx
+    end
+  end
+  
+  return best_idx
 end
 
 # Write to file
@@ -277,7 +224,7 @@ end
 
 # ===================== MAIN =====================
 puts "=" * 60
-puts "GDS to Wafer Map Converter (Ruby) - v9 Enhanced"
+puts "GDS to Wafer Map Converter - CLUSTERING APPROACH"
 puts "=" * 60
 
 positions = extract_die_positions(ep_layer, ep_datatype)
@@ -285,7 +232,7 @@ positions = extract_die_positions(ep_layer, ep_datatype)
 if positions.empty?
   RBA::MessageBox.warning("Error", "No die found! Check layer 18/0", RBA::MessageBox::Ok)
 else
-  grid, pitch_x, pitch_y = create_grid(positions, wafer_diameter_mm)
+  grid, pitch_x, pitch_y = create_grid_from_actual_positions(positions, wafer_diameter_mm)
   
   if grid.empty?
     puts "ERROR: Could not create grid"
