@@ -56,59 +56,114 @@ def median(array)
   (sorted[(len - 1) / 2] + sorted[len / 2]) / 2.0
 end
 
-# Find unique row and column positions by clustering
-def find_grid_lines(positions)
-  x_coords = positions.map { |p| p[0] }.sort
-  y_coords = positions.map { |p| p[1] }.sort
+# Simple 1D K-Means clustering for coordinate values
+def kmeans_1d(values, expected_pitch, tolerance = 0.3)
+  return [] if values.empty?
   
-  # Cluster X coordinates (find unique columns)
-  x_clusters = cluster_coordinates(x_coords, 0.5)  # 0.5mm tolerance
-  y_clusters = cluster_coordinates(y_coords, 0.5)
+  sorted = values.sort
+  min_val = sorted.first
+  max_val = sorted.last
   
-  puts "Found #{x_clusters.length} unique columns"
-  puts "Found #{y_clusters.length} unique rows"
+  # Estimate number of clusters based on range and pitch
+  num_clusters = ((max_val - min_val) / expected_pitch).round + 1
   
-  return x_clusters, y_clusters
-end
-
-# Cluster nearby coordinates together
-def cluster_coordinates(coords, tolerance)
-  return [] if coords.empty?
+  puts "  Attempting #{num_clusters} clusters for range #{min_val.round(2)} to #{max_val.round(2)}"
   
-  clusters = []
-  current_cluster = [coords[0]]
-  
-  (1...coords.length).each do |i|
-    if (coords[i] - current_cluster.last).abs <= tolerance
-      current_cluster << coords[i]
-    else
-      # Finalize cluster (use median)
-      clusters << median(current_cluster)
-      current_cluster = [coords[i]]
-    end
+  # Initialize cluster centers evenly
+  centers = []
+  (0...num_clusters).each do |i|
+    centers << min_val + i * expected_pitch
   end
   
-  # Don't forget last cluster
-  clusters << median(current_cluster) if !current_cluster.empty?
+  # Run k-means iterations
+  10.times do |iteration|
+    # Assign each value to nearest center
+    assignments = Array.new(num_clusters) { [] }
+    
+    sorted.each do |val|
+      nearest_idx = 0
+      min_dist = (val - centers[0]).abs
+      
+      (1...num_clusters).each do |i|
+        dist = (val - centers[i]).abs
+        if dist < min_dist
+          min_dist = dist
+          nearest_idx = i
+        end
+      end
+      
+      assignments[nearest_idx] << val
+    end
+    
+    # Update centers to mean of assigned values
+    new_centers = []
+    assignments.each_with_index do |cluster, i|
+      if cluster.empty?
+        new_centers << centers[i]  # Keep old center if no assignments
+      else
+        new_centers << (cluster.sum / cluster.length.to_f)
+      end
+    end
+    
+    # Check convergence
+    max_change = 0
+    (0...num_clusters).each do |i|
+      change = (new_centers[i] - centers[i]).abs
+      max_change = change if change > max_change
+    end
+    
+    centers = new_centers
+    
+    break if max_change < 0.01  # Converged
+  end
   
-  return clusters
+  # Remove empty clusters and sort
+  final_centers = centers.select do |center|
+    sorted.any? { |val| (val - center).abs < tolerance }
+  end
+  
+  return final_centers.sort
 end
 
-# Create grid based on ACTUAL die positions
-def create_grid_from_actual_positions(positions, wafer_diameter_mm)
+# Create grid using k-means clustering
+def create_grid_kmeans(positions, wafer_diameter_mm)
   return [] if positions.empty?
   
-  # Find actual grid lines from die positions
-  x_grid, y_grid = find_grid_lines(positions)
+  x_list = positions.map { |p| p[0] }
+  y_list = positions.map { |p| p[1] }
+  
+  min_x = x_list.min
+  max_x = x_list.max
+  min_y = y_list.min
+  max_y = y_list.max
+  
+  puts "X range: #{min_x.round(3)} to #{max_x.round(3)} mm"
+  puts "Y range: #{min_y.round(3)} to #{max_y.round(3)} mm"
+  
+  # Estimate pitch from range and expected die count
+  estimated_cols = Math.sqrt(positions.length * (max_x - min_x) / (max_y - min_y)).round
+  estimated_rows = Math.sqrt(positions.length * (max_y - min_y) / (max_x - min_x)).round
+  
+  pitch_x_estimate = (max_x - min_x) / (estimated_cols - 1)
+  pitch_y_estimate = (max_y - min_y) / (estimated_rows - 1)
+  
+  puts "Estimated pitch - X: #{pitch_x_estimate.round(4)} mm, Y: #{pitch_y_estimate.round(4)} mm"
+  
+  # Run k-means to find grid line positions
+  puts "K-means clustering X coordinates..."
+  x_grid = kmeans_1d(x_list, pitch_x_estimate, 0.5)
+  
+  puts "K-means clustering Y coordinates..."
+  y_grid = kmeans_1d(y_list, pitch_y_estimate, 0.5)
   
   cols = x_grid.length
   rows = y_grid.length
   
-  puts "Grid: #{cols} cols x #{rows} rows (from actual positions)"
+  puts "Grid: #{cols} cols x #{rows} rows"
   
   # Safety check
-  if cols > 300 || rows > 300
-    puts "ERROR: Grid too large!"
+  if cols > 300 || rows > 300 || cols < 10 || rows < 10
+    puts "ERROR: Grid size unusual (#{cols}x#{rows})"
     return [], 0, 0
   end
   
@@ -116,11 +171,6 @@ def create_grid_from_actual_positions(positions, wafer_diameter_mm)
   grid = Array.new(rows) { Array.new(cols, '.') }
   
   # Calculate wafer center
-  min_x = x_grid.min
-  max_x = x_grid.max
-  min_y = y_grid.min
-  max_y = y_grid.max
-  
   cx = (min_x + max_x) / 2.0
   cy = (min_y + max_y) / 2.0
   radius = wafer_diameter_mm / 2.0
@@ -128,12 +178,12 @@ def create_grid_from_actual_positions(positions, wafer_diameter_mm)
   puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)}) mm"
   
   # Calculate average pitch for header
-  pitch_x = cols > 1 ? (max_x - min_x) / (cols - 1) : 1.78
-  pitch_y = rows > 1 ? (max_y - min_y) / (rows - 1) : 1.81
+  pitch_x = cols > 1 ? (x_grid.last - x_grid.first) / (cols - 1) : pitch_x_estimate
+  pitch_y = rows > 1 ? (y_grid.last - y_grid.first) / (rows - 1) : pitch_y_estimate
   
-  puts "Average pitch - X: #{pitch_x.round(4)} mm, Y: #{pitch_y.round(4)} mm"
+  puts "Final pitch - X: #{pitch_x.round(4)} mm, Y: #{pitch_y.round(4)} mm"
   
-  # Map each die to nearest grid intersection
+  # Map each die to nearest grid cell
   mapped_count = 0
   
   positions.each do |pos|
@@ -144,14 +194,20 @@ def create_grid_from_actual_positions(positions, wafer_diameter_mm)
     col = find_nearest_index(x, x_grid)
     row = find_nearest_index(y, y_grid)
     
-    if row >= 0 && row < rows && col >= 0 && col < cols
-      # Calculate distance from wafer center
-      dx = x - cx
-      dy = y - cy
-      dist = Math.sqrt(dx * dx + dy * dy)
+    # Check distance to grid intersection
+    if col && row
+      grid_x = x_grid[col]
+      grid_y = y_grid[row]
       
-      # Only set if empty
-      if grid[row][col] == '.'
+      snap_dist = Math.sqrt((x - grid_x)**2 + (y - grid_y)**2)
+      
+      # Only map if close enough (within 0.6mm)
+      if snap_dist < 0.6 && grid[row][col] == '.'
+        # Calculate distance from wafer center
+        dx = x - cx
+        dy = y - cy
+        dist = Math.sqrt(dx * dx + dy * dy)
+        
         if dist > (radius - 3.0)
           grid[row][col] = '*'
         else
@@ -167,9 +223,9 @@ def create_grid_from_actual_positions(positions, wafer_diameter_mm)
   return grid, pitch_x, pitch_y
 end
 
-# Find index of nearest value in sorted array
+# Find index of nearest value in array
 def find_nearest_index(value, array)
-  return 0 if array.empty?
+  return nil if array.empty?
   
   min_diff = Float::INFINITY
   best_idx = 0
@@ -224,7 +280,7 @@ end
 
 # ===================== MAIN =====================
 puts "=" * 60
-puts "GDS to Wafer Map Converter - CLUSTERING APPROACH"
+puts "GDS to Wafer Map Converter - K-MEANS CLUSTERING"
 puts "=" * 60
 
 positions = extract_die_positions(ep_layer, ep_datatype)
@@ -232,7 +288,7 @@ positions = extract_die_positions(ep_layer, ep_datatype)
 if positions.empty?
   RBA::MessageBox.warning("Error", "No die found! Check layer 18/0", RBA::MessageBox::Ok)
 else
-  grid, pitch_x, pitch_y = create_grid_from_actual_positions(positions, wafer_diameter_mm)
+  grid, pitch_x, pitch_y = create_grid_kmeans(positions, wafer_diameter_mm)
   
   if grid.empty?
     puts "ERROR: Could not create grid"
