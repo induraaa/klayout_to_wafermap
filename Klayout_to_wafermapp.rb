@@ -23,7 +23,7 @@ def get_current_layout
   return cv.layout, cv.cell
 end
 
-# Extract die positions
+# Extract die positions and sizes
 def extract_die_positions(ep_layer, ep_datatype)
   layout, cell = get_current_layout
   return [] if layout.nil?
@@ -32,6 +32,7 @@ def extract_die_positions(ep_layer, ep_datatype)
   shapes = cell.shapes(layer_idx)
   
   positions = []
+  sizes = []
   count = 0
   
   shapes.each do |shape|
@@ -44,16 +45,41 @@ def extract_die_positions(ep_layer, ep_datatype)
     cx_mm = cx * layout.dbu / 1000.0
     cy_mm = cy * layout.dbu / 1000.0
     
+    width_mm = (bbox.right - bbox.left) * layout.dbu / 1000.0
+    height_mm = (bbox.top - bbox.bottom) * layout.dbu / 1000.0
+    area_mm2 = width_mm * height_mm
+    
     positions << [cx_mm, cy_mm]
+    sizes << area_mm2
   end
   
   puts "Found shapes: #{count}"
   puts "Die positions: #{positions.length}"
   
-  return positions
+  # Calculate median size to identify normal dies
+  sorted_sizes = sizes.sort
+  median_size = sorted_sizes[sorted_sizes.length / 2]
+  
+  # Filter out test structures (anything > 2x median size)
+  normal_dies = []
+  test_structures = []
+  
+  positions.each_with_index do |pos, i|
+    if sizes[i] > median_size * 2.0
+      test_structures << pos
+      puts "Test structure at (#{pos[0].round(2)}, #{pos[1].round(2)}) - size: #{sizes[i].round(2)} mm²"
+    else
+      normal_dies << pos
+    end
+  end
+  
+  puts "Normal dies: #{normal_dies.length}"
+  puts "Test structures: #{test_structures.length}"
+  
+  return normal_dies
 end
 
-# Create grid with manual pitch and intelligent gap filling
+# Create grid with flexible tolerance
 def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
   return [], 0, 0, 0, 0 if positions.empty?
   
@@ -85,87 +111,44 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
   puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)}) mm"
   puts "Radius: #{radius} mm"
   
-  # PASS 1: Map each die to nearest grid cell
+  # Map EVERY die to the closest grid cell within search radius
   mapped_count = 0
   edge_count = 0
+  unmapped = []
+  
+  tolerance = [pitch_x, pitch_y].max * 0.6  # Search within 60% of pitch
   
   positions.each do |pos|
     x = pos[0]
     y = pos[1]
     
-    # Calculate exact grid position
+    # Find closest grid cell
     col_exact = (x - min_x) / pitch_x
     row_exact = (y - min_y) / pitch_y
     
-    # Round to nearest grid cell
-    col = col_exact.round
-    row = row_exact.round
+    col_center = col_exact.round
+    row_center = row_exact.round
     
-    if row >= 0 && row < rows && col >= 0 && col < cols
-      # Only map if empty
-      if grid[row][col] == '.'
-        # Calculate distance from wafer center
-        dx = x - cx
-        dy = y - cy
-        dist = Math.sqrt(dx * dx + dy * dy)
-        
-        # Edge detection: dies within 3mm of edge
-        if dist > (radius - 3.0)
-          grid[row][col] = '*'
-          edge_count += 1
-        else
-          grid[row][col] = '?'
-        end
-        
-        mapped_count += 1
-      end
-    end
-  end
-  
-  puts "PASS 1: Mapped #{mapped_count} / #{positions.length} dies"
-  
-  # PASS 2: Fill gaps - look for unmapped dies that fell between cells
-  puts "PASS 2: Attempting to recover unmapped dies..."
-  recovery_count = 0
-  
-  positions.each do |pos|
-    x = pos[0]
-    y = pos[1]
-    
-    col_exact = (x - min_x) / pitch_x
-    row_exact = (y - min_y) / pitch_y
-    
-    col = col_exact.round
-    row = row_exact.round
-    
-    # Check if this position was already mapped
-    if row >= 0 && row < rows && col >= 0 && col < cols
-      if grid[row][col] != '.'
-        next  # Already mapped
-      end
-    end
-    
-    # This die wasn't mapped! Try to find nearest empty cell
+    # Search 3x3 neighborhood for best empty cell
     best_col = nil
     best_row = nil
     min_dist = Float::INFINITY
     
-    # Search in 3x3 neighborhood
     (-1..1).each do |dr|
       (-1..1).each do |dc|
-        test_col = col + dc
-        test_row = row + dr
+        test_col = col_center + dc
+        test_row = row_center + dr
         
         next if test_col < 0 || test_col >= cols
         next if test_row < 0 || test_row >= rows
-        next if grid[test_row][test_col] != '.'
         
         # Calculate distance from die to this cell center
         cell_x = min_x + test_col * pitch_x
         cell_y = min_y + test_row * pitch_y
         dist = Math.sqrt((x - cell_x)**2 + (y - cell_y)**2)
         
-        if dist < min_dist
+        # Accept if closer and within tolerance
+        if dist < min_dist && dist < tolerance
           min_dist = dist
           best_col = test_col
           best_row = test_row
@@ -173,27 +156,32 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
       end
     end
     
-    # Map to best cell if found and within tolerance (1.0mm)
-    if best_col && min_dist < 1.0
-      # Calculate distance from wafer center
-      cell_x = min_x + best_col * pitch_x
-      cell_y = min_y + best_row * pitch_y
-      dx = cell_x - cx
-      dy = cell_y - cy
-      wafer_dist = Math.sqrt(dx * dx + dy * dy)
-      
-      if wafer_dist > (radius - 3.0)
-        grid[best_row][best_col] = '*'
+    # Map to best cell
+    if best_col && best_row
+      # Only fill if empty (don't overwrite)
+      if grid[best_row][best_col] == '.'
+        # Calculate distance from wafer center
+        dx = x - cx
+        dy = y - cy
+        wafer_dist = Math.sqrt(dx * dx + dy * dy)
+        
+        if wafer_dist > (radius - 3.0)
+          grid[best_row][best_col] = '*'
+          edge_count += 1
+        else
+          grid[best_row][best_col] = '?'
+        end
+        
+        mapped_count += 1
       else
-        grid[best_row][best_col] = '?'
+        # Cell already occupied - collision
+        unmapped << [x, y, "collision"]
       end
-      
-      recovery_count += 1
+    else
+      # No suitable cell found
+      unmapped << [x, y, "out of tolerance"]
     end
   end
-  
-  puts "PASS 2: Recovered #{recovery_count} additional dies"
-  mapped_count += recovery_count
   
   # Count remaining dots in wafer area
   dot_count = 0
@@ -215,8 +203,16 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
     end
   end
   
-  puts "Total mapped: #{mapped_count} / #{positions.length} dies"
+  puts "Mapped: #{mapped_count} / #{positions.length} dies (#{edge_count} edge)"
+  puts "Unmapped: #{unmapped.length} dies"
   puts "Empty cells inside wafer: #{dot_count}"
+  
+  if unmapped.length > 0 && unmapped.length < 20
+    puts "Unmapped die details:"
+    unmapped.each do |u|
+      puts "  (#{u[0].round(2)}, #{u[1].round(2)}) - #{u[2]}"
+    end
+  end
   
   return grid, pitch_x, pitch_y, mapped_count, dot_count
 end
@@ -272,7 +268,7 @@ end
 
 # ===================== MAIN =====================
 puts "=" * 60
-puts "GDS to Wafer Map Converter - v9 TWO-PASS"
+puts "GDS to Wafer Map Converter - v10 TOLERANCE MAPPING"
 puts "=" * 60
 
 positions = extract_die_positions(ep_layer, ep_datatype)
