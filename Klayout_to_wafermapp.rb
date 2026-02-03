@@ -53,7 +53,7 @@ def extract_die_positions(ep_layer, ep_datatype)
   return positions
 end
 
-# Create grid with manual pitch
+# Create grid with manual pitch and intelligent gap filling
 def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
   return [], 0, 0, 0, 0 if positions.empty?
   
@@ -85,10 +85,9 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
   puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)}) mm"
   puts "Radius: #{radius} mm"
   
-  # Map each die with improved snapping
+  # PASS 1: Map each die to nearest grid cell
   mapped_count = 0
   edge_count = 0
-  dot_count = 0
   
   positions.each do |pos|
     x = pos[0]
@@ -123,7 +122,81 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
     end
   end
   
+  puts "PASS 1: Mapped #{mapped_count} / #{positions.length} dies"
+  
+  # PASS 2: Fill gaps - look for unmapped dies that fell between cells
+  puts "PASS 2: Attempting to recover unmapped dies..."
+  recovery_count = 0
+  
+  positions.each do |pos|
+    x = pos[0]
+    y = pos[1]
+    
+    col_exact = (x - min_x) / pitch_x
+    row_exact = (y - min_y) / pitch_y
+    
+    col = col_exact.round
+    row = row_exact.round
+    
+    # Check if this position was already mapped
+    if row >= 0 && row < rows && col >= 0 && col < cols
+      if grid[row][col] != '.'
+        next  # Already mapped
+      end
+    end
+    
+    # This die wasn't mapped! Try to find nearest empty cell
+    best_col = nil
+    best_row = nil
+    min_dist = Float::INFINITY
+    
+    # Search in 3x3 neighborhood
+    (-1..1).each do |dr|
+      (-1..1).each do |dc|
+        test_col = col + dc
+        test_row = row + dr
+        
+        next if test_col < 0 || test_col >= cols
+        next if test_row < 0 || test_row >= rows
+        next if grid[test_row][test_col] != '.'
+        
+        # Calculate distance from die to this cell center
+        cell_x = min_x + test_col * pitch_x
+        cell_y = min_y + test_row * pitch_y
+        dist = Math.sqrt((x - cell_x)**2 + (y - cell_y)**2)
+        
+        if dist < min_dist
+          min_dist = dist
+          best_col = test_col
+          best_row = test_row
+        end
+      end
+    end
+    
+    # Map to best cell if found and within tolerance (1.0mm)
+    if best_col && min_dist < 1.0
+      # Calculate distance from wafer center
+      cell_x = min_x + best_col * pitch_x
+      cell_y = min_y + best_row * pitch_y
+      dx = cell_x - cx
+      dy = cell_y - cy
+      wafer_dist = Math.sqrt(dx * dx + dy * dy)
+      
+      if wafer_dist > (radius - 3.0)
+        grid[best_row][best_col] = '*'
+      else
+        grid[best_row][best_col] = '?'
+      end
+      
+      recovery_count += 1
+    end
+  end
+  
+  puts "PASS 2: Recovered #{recovery_count} additional dies"
+  mapped_count += recovery_count
+  
   # Count remaining dots in wafer area
+  dot_count = 0
   grid.each_with_index do |row, r|
     row.each_with_index do |cell, c|
       if cell == '.'
@@ -142,8 +215,7 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
     end
   end
   
-  puts "Mapped #{mapped_count} / #{positions.length} dies (#{edge_count} edge)"
-  puts "Missing: #{positions.length - mapped_count} dies"
+  puts "Total mapped: #{mapped_count} / #{positions.length} dies"
   puts "Empty cells inside wafer: #{dot_count}"
   
   return grid, pitch_x, pitch_y, mapped_count, dot_count
@@ -200,7 +272,7 @@ end
 
 # ===================== MAIN =====================
 puts "=" * 60
-puts "GDS to Wafer Map Converter - v9 FIXED PITCH"
+puts "GDS to Wafer Map Converter - v9 TWO-PASS"
 puts "=" * 60
 
 positions = extract_die_positions(ep_layer, ep_datatype)
