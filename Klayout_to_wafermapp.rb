@@ -4,6 +4,11 @@ wafer_diameter_mm = 150.0
 ep_layer = 18
 ep_datatype = 0
 
+# MANUAL PITCH OVERRIDE
+PITCH_X_MM = 1.467
+PITCH_Y_MM = 1.467
+TOLERANCE_FACTOR = 0.75  # 75% of pitch
+
 # Get current layout
 def get_current_layout
   app = RBA::Application.instance
@@ -19,7 +24,7 @@ def get_current_layout
   return cv.layout, cv.cell
 end
 
-# Extract die positions
+# Extract die positions and sizes
 def extract_die_positions(ep_layer, ep_datatype)
   layout, cell = get_current_layout
   return [] if layout.nil?
@@ -51,90 +56,30 @@ def extract_die_positions(ep_layer, ep_datatype)
   
   puts "Found shapes: #{count}"
   
-  # Filter out test structures
+  # Filter out test structures (anything > 2x median size)
   sorted_sizes = sizes.sort
   median_size = sorted_sizes[sorted_sizes.length / 2]
   
   normal_dies = []
+  test_structures = []
+  
   positions.each_with_index do |pos, i|
-    if sizes[i] <= median_size * 2.0
+    if sizes[i] > median_size * 2.0
+      test_structures << pos
+      puts "Test structure at (#{pos[0].round(2)}, #{pos[1].round(2)}) - size: #{sizes[i].round(2)} mm²"
+    else
       normal_dies << pos
     end
   end
   
   puts "Normal dies: #{normal_dies.length}"
+  puts "Test structures: #{test_structures.length}"
   
   return normal_dies
 end
 
-# Calculate EXACT pitch by analyzing actual nearest neighbor distances
-def calculate_exact_pitch(positions, sample_size = 500)
-  return [1.466, 1.466] if positions.length < 100
-  
-  sample = positions.take([sample_size, positions.length].min)
-  
-  x_distances = []
-  y_distances = []
-  
-  sample.each_with_index do |pos, i|
-    nearest_x = Float::INFINITY
-    nearest_y = Float::INFINITY
-    
-    positions.each_with_index do |other, j|
-      next if i == j
-      
-      dx = (other[0] - pos[0]).abs
-      dy = (other[1] - pos[1]).abs
-      
-      # Find nearest in X (same row: Y within 0.5mm)
-      if dy < 0.5 && dx > 0.1 && dx < 3.0
-        nearest_x = dx if dx < nearest_x
-      end
-      
-      # Find nearest in Y (same column: X within 0.5mm)
-      if dx < 0.5 && dy > 0.1 && dy < 3.0
-        nearest_y = dy if dy < nearest_y
-      end
-    end
-    
-    x_distances << nearest_x if nearest_x < Float::INFINITY
-    y_distances << nearest_y if nearest_y < Float::INFINITY
-  end
-  
-  # Use MODE (most common value) instead of median
-  pitch_x = mode_of_distances(x_distances)
-  pitch_y = mode_of_distances(y_distances)
-  
-  puts "Calculated pitch from die spacing:"
-  puts "  X: #{pitch_x.round(4)} mm (from #{x_distances.length} samples)"
-  puts "  Y: #{pitch_y.round(4)} mm (from #{y_distances.length} samples)"
-  
-  return [pitch_x, pitch_y]
-end
-
-# Find mode (most common value) by binning
-def mode_of_distances(distances)
-  return 1.466 if distances.empty?
-  
-  # Create histogram with 0.001mm bins
-  histogram = Hash.new(0)
-  
-  distances.each do |d|
-    bin = (d * 1000).round  # Convert to 0.001mm bins
-    histogram[bin] += 1
-  end
-  
-  # Find most common bin
-  max_count = histogram.values.max
-  mode_bin = histogram.key(max_count)
-  
-  mode_value = mode_bin / 1000.0
-  
-  return mode_value
-end
-
-# Create grid with calculated pitch
-def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
+# Create grid with two-pass mapping
+def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y, tolerance_factor)
   return [], 0, 0, 0, 0 if positions.empty?
   
   x_list = positions.map { |p| p[0] }
@@ -148,6 +93,7 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
   puts "X range: #{min_x.round(3)} to #{max_x.round(3)} mm"
   puts "Y range: #{min_y.round(3)} to #{max_y.round(3)} mm"
   puts "Using pitch - X: #{pitch_x} mm, Y: #{pitch_y} mm"
+  puts "Tolerance: #{(tolerance_factor * 100).round(1)}% of pitch"
   
   cols = ((max_x - min_x) / pitch_x).round + 1
   rows = ((max_y - min_y) / pitch_y).round + 1
@@ -163,11 +109,14 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
   radius = wafer_diameter_mm / 2.0
   
   puts "Wafer center: (#{cx.round(2)}, #{cy.round(2)}) mm"
+  puts "Radius: #{radius} mm"
   
-  # Map each die - use EXPANDED tolerance
+  # PASS 1: Map dies with normal tolerance
   mapped_count = 0
   edge_count = 0
-  tolerance = [pitch_x, pitch_y].max * 0.7  # 70% of pitch
+  tolerance = [pitch_x, pitch_y].max * tolerance_factor
+  
+  puts "PASS 1: Mapping with tolerance #{tolerance.round(4)} mm..."
   
   positions.each do |pos|
     x = pos[0]
@@ -179,7 +128,7 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
     col_center = col_exact.round
     row_center = row_exact.round
     
-    # Search 3x3 for best cell
+    # Search 3x3 neighborhood for best empty cell
     best_col = nil
     best_row = nil
     min_dist = Float::INFINITY
@@ -220,7 +169,95 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
     end
   end
   
-  # Count dots
+  puts "PASS 1: Mapped #{mapped_count} / #{positions.length} dies"
+  
+  # PASS 2: Force map remaining dies to nearest empty cell
+  puts "PASS 2: Forcing unmapped dies..."
+  second_pass = 0
+  
+  positions.each do |pos|
+    x = pos[0]
+    y = pos[1]
+    
+    col_exact = (x - min_x) / pitch_x
+    row_exact = (y - min_y) / pitch_y
+    
+    col_center = col_exact.round
+    row_center = row_exact.round
+    
+    # Check if this die was already mapped in first pass
+    already_mapped = false
+    
+    (-1..1).each do |dr|
+      (-1..1).each do |dc|
+        test_col = col_center + dc
+        test_row = row_center + dr
+        
+        next if test_col < 0 || test_col >= cols
+        next if test_row < 0 || test_row >= rows
+        
+        if grid[test_row][test_col] != '.'
+          # Check if this cell is close to our die
+          cell_x = min_x + test_col * pitch_x
+          cell_y = min_y + test_row * pitch_y
+          dist = Math.sqrt((x - cell_x)**2 + (y - cell_y)**2)
+          
+          if dist < tolerance
+            already_mapped = true
+            break
+          end
+        end
+      end
+      break if already_mapped
+    end
+    
+    next if already_mapped
+    
+    # Not mapped! Find nearest empty cell within 5x5 grid
+    best_col = nil
+    best_row = nil
+    min_dist = Float::INFINITY
+    
+    (-2..2).each do |dr|
+      (-2..2).each do |dc|
+        test_col = col_center + dc
+        test_row = row_center + dr
+        
+        next if test_col < 0 || test_col >= cols
+        next if test_row < 0 || test_row >= rows
+        next if grid[test_row][test_col] != '.'  # Must be empty
+        
+        cell_x = min_x + test_col * pitch_x
+        cell_y = min_y + test_row * pitch_y
+        dist = Math.sqrt((x - cell_x)**2 + (y - cell_y)**2)
+        
+        if dist < min_dist
+          min_dist = dist
+          best_col = test_col
+          best_row = test_row
+        end
+      end
+    end
+    
+    if best_col && best_row
+      dx = x - cx
+      dy = y - cy
+      wafer_dist = Math.sqrt(dx * dx + dy * dy)
+      
+      if wafer_dist > (radius - 3.0)
+        grid[best_row][best_col] = '*'
+      else
+        grid[best_row][best_col] = '?'
+      end
+      
+      second_pass += 1
+    end
+  end
+  
+  puts "PASS 2: Recovered #{second_pass} additional dies"
+  mapped_count += second_pass
+  
+  # Count remaining dots in wafer area
   dot_count = 0
   grid.each_with_index do |row, r|
     row.each_with_index do |cell, c|
@@ -230,12 +267,16 @@ def create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
         dx = x - cx
         dy = y - cy
         dist = Math.sqrt(dx * dx + dy * dy)
-        dot_count += 1 if dist <= radius
+        
+        if dist <= radius
+          dot_count += 1
+        end
       end
     end
   end
   
-  puts "Mapped: #{mapped_count} / #{positions.length} dies"
+  puts "Total mapped: #{mapped_count} / #{positions.length} dies (#{edge_count} edge)"
+  puts "Unmapped: #{positions.length - mapped_count} dies"
   puts "Empty cells inside wafer: #{dot_count}"
   
   return grid, pitch_x, pitch_y, mapped_count, dot_count
@@ -266,13 +307,13 @@ def write_file(grid, pitch_x, pitch_y, output_path, total_dies, mapped_count, do
     f.puts "\"25\""
     f.puts "\"1\",\"PASS\",\"\",\"0\",\"0\",\"PASS\",65280,\"0\",\"0\",\"False\""
     
-    # Write grid
+    # Write grid (reversed for correct orientation)
     grid.reverse.each do |row|
       line = row.map { |cell| "\"#{cell}\"" }.join(',')
       f.puts line
     end
     
-    # Statistics
+    # Write statistics as comments at the end
     f.puts ""
     f.puts "# ===== MAPPING STATISTICS ====="
     f.puts "# Total dies in GDS: #{total_dies}"
@@ -285,25 +326,22 @@ def write_file(grid, pitch_x, pitch_y, output_path, total_dies, mapped_count, do
     f.puts "# ==============================="
   end
   
-  msg = "Success!\n\nMapped: #{mapped_count}/#{total_dies} (#{((mapped_count.to_f / total_dies) * 100).round(1)}%)\nDots inside wafer: #{dot_count}"
+  msg = "Success!\n\nFile: #{output_path}\nRows: #{grid.length}\nCols: #{grid[0].length}\nMapped: #{mapped_count}/#{total_dies} (#{((mapped_count.to_f / total_dies) * 100).round(1)}%)\nDots inside wafer: #{dot_count}"
   RBA::MessageBox.info("Done", msg, RBA::MessageBox::Ok)
   puts "DONE!"
 end
 
 # ===================== MAIN =====================
 puts "=" * 60
-puts "GDS to Wafer Map - ADAPTIVE PITCH CALCULATION"
+puts "GDS to Wafer Map Converter - TWO-PASS MAPPING"
 puts "=" * 60
 
 positions = extract_die_positions(ep_layer, ep_datatype)
 
 if positions.empty?
-  RBA::MessageBox.warning("Error", "No die found!", RBA::MessageBox::Ok)
+  RBA::MessageBox.warning("Error", "No die found! Check layer 18/0", RBA::MessageBox::Ok)
 else
-  # Calculate pitch from actual die spacing
-  pitch_x, pitch_y = calculate_exact_pitch(positions)
-  
-  grid, pitch_x, pitch_y, mapped_count, dot_count = create_grid(positions, wafer_diameter_mm, pitch_x, pitch_y)
+  grid, pitch_x, pitch_y, mapped_count, dot_count = create_grid(positions, wafer_diameter_mm, PITCH_X_MM, PITCH_Y_MM, TOLERANCE_FACTOR)
   
   if grid.empty?
     puts "ERROR: Could not create grid"
