@@ -1,0 +1,3 @@
+NoMethodError: undefined method `find_cell' for #<RBA::Layout:0x00000203bae1e398>
+Did you mean?  find_layer
+  C:/Users/I_Rathnamalala201/KLayout/macros\new_ruby_file.rb:13:in `<main>'
