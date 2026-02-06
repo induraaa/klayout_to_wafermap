@@ -9,10 +9,12 @@ top = mw.current_view.active_cellview.cell
 die_cell_name = "DIE"  # Replace with your actual die cell name
 output_file = "wafer_layout.csv"
 
-# Get die cell
-die_cell = ly.find_cell(die_cell_name)
+# Get die cell using cell_by_name (works in all KLayout versions)
+die_cell = ly.cell_by_name(die_cell_name)
 if !die_cell
   puts "ERROR: Die cell '#{die_cell_name}' not found!"
+  puts "Available cells:"
+  ly.each_cell { |cell| puts "  - #{cell.name}" }
   exit
 end
 
